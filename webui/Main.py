@@ -650,6 +650,7 @@ with middle_panel:
             ("azure-tts-v2", "Azure TTS V2"),
             ("siliconflow", "SiliconFlow TTS"),
             ("gemini-tts", "Google Gemini TTS"),
+            ("emotivoice", "Local EmotiVoice TTS"),
         ]
 
         # 获取保存的TTS服务器，默认为v1
@@ -679,6 +680,9 @@ with middle_panel:
         elif selected_tts_server == "gemini-tts":
             # 获取Gemini TTS的声音列表
             filtered_voices = voice.get_gemini_voices()
+        elif selected_tts_server == "emotivoice":
+            # 获取本地 EmotiVoice 声音列表
+            filtered_voices = voice.get_emotivoice_voices()
         else:
             # 获取Azure的声音列表
             all_voices = voice.get_all_azure_voices(filter_locals=None)
@@ -772,9 +776,24 @@ with middle_panel:
                     )
 
                 if sub_maker and os.path.exists(audio_file):
-                    st.audio(audio_file, format="audio/mp3")
+                    with open(audio_file, "rb") as f:
+                        audio_bytes = f.read()
+                    st.audio(audio_bytes, format="audio/mp3")
                     if os.path.exists(audio_file):
                         os.remove(audio_file)
+                else:
+                    if selected_tts_server == "emotivoice":
+                        st.error(
+                            tr(
+                                "EmotiVoice TTS failed help"
+                            )
+                        )
+                    else:
+                        st.error(
+                            tr(
+                                "Voice synthesis failed. Please check server settings, network, and selected voice."
+                            )
+                        )
 
         # 当选择V2版本或者声音是V2声音时，显示服务区域和API key输入框
         if selected_tts_server == "azure-tts-v2" or (
@@ -821,6 +840,72 @@ with middle_panel:
             )
 
             config.siliconflow["api_key"] = siliconflow_api_key
+
+        # 当选择本地 EmotiVoice 时，显示服务地址等配置项
+        if selected_tts_server == "emotivoice" or (
+            voice_name and voice.is_emotivoice_voice(voice_name)
+        ):
+            saved_emotivoice_base_url = config.emotivoice.get(
+                "base_url", "http://127.0.0.1:8000"
+            )
+            saved_emotivoice_api_path = config.emotivoice.get(
+                "api_path", "/v1/audio/speech"
+            )
+            saved_emotivoice_api_key = config.emotivoice.get("api_key", "")
+            saved_emotivoice_model = config.emotivoice.get("model", "emoti-voice")
+            saved_emotivoice_voice = config.emotivoice.get("voice", "8051")
+            saved_emotivoice_prompt = config.emotivoice.get("prompt", "开心")
+            saved_emotivoice_language = config.emotivoice.get("language", "zh_us")
+
+            st.caption(tr("EmotiVoice HTTP note"))
+            emotivoice_base_url = st.text_input(
+                tr("EmotiVoice API Base URL"),
+                value=saved_emotivoice_base_url,
+                key="emotivoice_base_url_input",
+            )
+            emotivoice_voice = st.text_input(
+                tr("EmotiVoice Speaker ID"),
+                value=saved_emotivoice_voice,
+                key="emotivoice_voice_input",
+                help=tr("EmotiVoice Speaker ID help"),
+            )
+            emotivoice_prompt = st.text_input(
+                tr("EmotiVoice Emotion Prompt"),
+                value=saved_emotivoice_prompt,
+                key="emotivoice_prompt_input",
+                help=tr("EmotiVoice Emotion Prompt help"),
+            )
+            emotivoice_language = st.text_input(
+                tr("EmotiVoice Language"),
+                value=saved_emotivoice_language,
+                key="emotivoice_language_input",
+            )
+
+            with st.expander(tr("EmotiVoice Advanced"), expanded=False):
+                emotivoice_api_path = st.text_input(
+                    tr("EmotiVoice API Path"),
+                    value=saved_emotivoice_api_path,
+                    key="emotivoice_api_path_input",
+                )
+                emotivoice_model = st.text_input(
+                    tr("EmotiVoice Model"),
+                    value=saved_emotivoice_model,
+                    key="emotivoice_model_input",
+                )
+                emotivoice_api_key = st.text_input(
+                    tr("EmotiVoice API Key"),
+                    value=saved_emotivoice_api_key,
+                    type="password",
+                    key="emotivoice_api_key_input",
+                )
+
+            config.emotivoice["base_url"] = emotivoice_base_url
+            config.emotivoice["api_path"] = emotivoice_api_path
+            config.emotivoice["api_key"] = emotivoice_api_key
+            config.emotivoice["model"] = emotivoice_model
+            config.emotivoice["voice"] = emotivoice_voice
+            config.emotivoice["prompt"] = emotivoice_prompt
+            config.emotivoice["language"] = emotivoice_language
 
         params.voice_volume = st.selectbox(
             tr("Speech Volume"),

@@ -216,6 +216,19 @@ speech_region = ""
 # Get your API key at https://siliconflow.cn
 api_key = ""
 
+[emotivoice]
+# 通过 HTTP 调用 EmotiVoice 的 FastAPI（仓库内 openaiapi.py），不是浏览器里的 Streamlit 演示页。
+# Streamlit（如 http://127.0.0.1:8509）不提供 REST，需在容器内启动：uvicorn openaiapi:app --host 0.0.0.0 --port 8000
+# 并映射端口（例如 -p 8000:8000）；base_url 填你可访问的 API 根地址。
+base_url = "http://127.0.0.1:8000"
+api_path = "/v1/audio/speech"
+api_key = ""
+model = "emoti-voice"
+voice = "8051"
+# 与演示页「Prompt (开心/悲伤)」一致：开心、悲伤，或一句描述情绪的话；留空为 API 默认
+prompt = "开心"
+language = "zh_us"
+
 [ui]
 # UI related settings
 # 是否隐藏日志信息

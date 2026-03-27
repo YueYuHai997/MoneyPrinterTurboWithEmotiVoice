@@ -76,6 +76,15 @@ def get_gemini_voices() -> list[str]:
     ]
 
 
+def get_emotivoice_voices() -> list[str]:
+    """
+    获取本地 EmotiVoice 的声音列表。
+    由于本地部署可用声音可能不同，这里使用配置里的 voice 作为可选默认项。
+    """
+    configured_voice = str(config.emotivoice.get("voice", "8051")).strip() or "8051"
+    return [f"emotivoice:{configured_voice}-Local"]
+
+
 def get_all_azure_voices(filter_locals=None) -> list[str]:
     azure_voices_str = """
 Name: af-ZA-AdriNeural
@@ -1116,6 +1125,11 @@ def is_gemini_voice(voice_name: str):
     return voice_name.startswith("gemini:")
 
 
+def is_emotivoice_voice(voice_name: str):
+    """检查是否是本地EmotiVoice的声音"""
+    return voice_name.startswith("emotivoice:")
+
+
 def tts(
     text: str,
     voice_name: str,
@@ -1154,6 +1168,18 @@ def tts(
         else:
             logger.error(f"Invalid gemini voice name format: {voice_name}")
             return None
+    elif is_emotivoice_voice(voice_name):
+        # 从voice_name中提取声音名称
+        # 格式: emotivoice:voice-Local
+        parts = voice_name.split(":")
+        if len(parts) >= 2:
+            voice_with_label = parts[1]
+            local_voice = voice_with_label.split("-")[0]
+            return emotivoice_tts(
+                text, local_voice, voice_rate, voice_file, voice_volume
+            )
+        logger.error(f"Invalid EmotiVoice voice name format: {voice_name}")
+        return None
     return azure_tts_v1(text, voice_name, voice_rate, voice_file)
 
 
@@ -1559,6 +1585,92 @@ def gemini_tts(
         return None
 
 
+def emotivoice_tts(
+    text: str,
+    voice_name: str,
+    voice_rate: float,
+    voice_file: str,
+    voice_volume: float = 1.0,
+) -> Union[SubMaker, None]:
+    """
+    调用本地 EmotiVoice 的 OpenAI 兼容 HTTP 服务（openaiapi.py 的 /v1/audio/speech）。
+    与官方 Streamlit 演示页一致：input 为合成文本，prompt 为情绪/风格描述（参见 demo_page 的 Prompt 字段）。
+    """
+    text = text.strip()
+    if not text:
+        logger.error("EmotiVoice TTS text is empty")
+        return None
+
+    # Streamlit 页（常见 8509）不提供 REST；需启动 uvicorn openaiapi:app，默认监听 8000
+    base_url = str(config.emotivoice.get("base_url", "http://127.0.0.1:8000")).strip()
+    api_path = str(config.emotivoice.get("api_path", "/v1/audio/speech")).strip()
+    api_key = str(config.emotivoice.get("api_key", "")).strip()
+    model_name = (
+        str(config.emotivoice.get("model", "emoti-voice")).strip() or "emoti-voice"
+    )
+    fallback_voice = str(config.emotivoice.get("voice", "8051")).strip() or "8051"
+    voice_name = voice_name or fallback_voice
+    # 情绪/风格 Prompt：为空时与官方 API 默认一致（中性）
+    style_prompt = str(config.emotivoice.get("prompt", "")).strip()
+    language = str(config.emotivoice.get("language", "zh_us")).strip() or "zh_us"
+
+    if not api_path.startswith("/"):
+        api_path = f"/{api_path}"
+
+    # 常见误配：把 Streamlit 页端口当成 API（宿主机映射 8509->8501 等）
+    if "8509" in base_url or base_url.rstrip("/").endswith(":8501"):
+        logger.error(
+            "EmotiVoice base_url 指向了 Streamlit 演示端口，不是 openaiapi。"
+            "请改为 http://127.0.0.1:8000（本机打开 WebUI）或 "
+            "http://host.docker.internal:8000（MoneyPrinterTurbo WebUI 在 Docker 内时）。"
+            f" 当前: {base_url}"
+        )
+        return None
+
+    url = f"{base_url.rstrip('/')}{api_path}"
+
+    payload = {
+        "model": model_name,
+        "input": text,
+        "voice": voice_name,
+        "prompt": style_prompt,
+        "language": language,
+        "response_format": "mp3",
+        "speed": voice_rate,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    for i in range(3):
+        try:
+            logger.info(f"start EmotiVoice tts, url: {url}, voice: {voice_name}, try: {i + 1}")
+            response = requests.post(url, json=payload, headers=headers, timeout=120)
+            if response.status_code == 200:
+                with open(voice_file, "wb") as f:
+                    f.write(response.content)
+
+                sub_maker = SubMaker()
+                try:
+                    audio_duration = _get_audio_duration_from_mp3(voice_file)
+                    audio_duration_100ns = int(audio_duration * 10000000)
+                    sub_maker.create_sub((0, audio_duration_100ns), text)
+                except Exception as e:
+                    logger.warning(f"failed to build subtitle from EmotiVoice audio: {e}")
+                    sub_maker.create_sub((0, 10000000), text)
+
+                logger.success(f"EmotiVoice tts succeeded: {voice_file}")
+                return sub_maker
+            logger.error(
+                f"EmotiVoice tts failed with status code {response.status_code}: {response.text}"
+            )
+        except Exception as e:
+            logger.error(f"EmotiVoice tts failed: {str(e)}")
+
+    return None
+
+
 def _format_text(text: str) -> str:
     # text = text.replace("\n", " ")
     text = text.replace("[", " ")
@@ -1591,11 +1703,50 @@ def create_subtitle(sub_maker: submaker.SubMaker, text: str, subtitle_file: str)
         end_t = mktimestamp(end_time).replace(".", ",")
         return f"{idx}\n{start_t} --> {end_t}\n{sub_text}\n"
 
+    script_lines = utils.split_string_by_punctuations(text)
     start_time = -1.0
     sub_items = []
     sub_index = 0
 
-    script_lines = utils.split_string_by_punctuations(text)
+    # 兼容仅返回整段时间轴的 TTS（如本地 EmotiVoice）。
+    # 当 sub_maker 只有一条 offset，而脚本包含多句时，按字符占比均分时长生成字幕，
+    # 避免 edge 字幕匹配失败后回退 whisper。
+    if (
+        len(sub_maker.offset) == 1
+        and len(sub_maker.subs) == 1
+        and len(script_lines) > 1
+    ):
+        try:
+            _start, _end = sub_maker.offset[0]
+            total_duration = max(0, _end - _start)
+            valid_lines = [line.strip() for line in script_lines if line.strip()]
+            total_chars = sum(len(line) for line in valid_lines)
+            if total_duration > 0 and total_chars > 0 and valid_lines:
+                current_offset = _start
+                for idx, line in enumerate(valid_lines, start=1):
+                    if idx == len(valid_lines):
+                        end_offset = _end
+                    else:
+                        line_duration = int(total_duration * (len(line) / total_chars))
+                        end_offset = max(current_offset + 1, current_offset + line_duration)
+                    sub_items.append(
+                        formatter(
+                            idx=idx,
+                            start_time=current_offset,
+                            end_time=end_offset,
+                            sub_text=line,
+                        )
+                    )
+                    current_offset = end_offset
+
+                with open(subtitle_file, "w", encoding="utf-8") as file:
+                    file.write("\n".join(sub_items) + "\n")
+                logger.info(
+                    f"completed, subtitle file created with fallback timeline: {subtitle_file}"
+                )
+                return
+        except Exception as e:
+            logger.warning(f"fallback subtitle generation failed: {str(e)}")
 
     def match_line(_sub_line: str, _sub_index: int):
         if len(script_lines) <= _sub_index:
